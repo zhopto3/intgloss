@@ -26,6 +26,7 @@ def hyperparameter_tuning(
     track: int,
     model_type: str,
     num_trials: int = 1,
+    merged:bool = False
 ):
     batch_size_lower_bound = batch_size_boundaries[language][0]
     batch_size_upper_bound = batch_size_boundaries[language][1]
@@ -51,6 +52,7 @@ def hyperparameter_tuning(
             scheduler_gamma=scheduler_gamma,
         )
         return experiment(
+            merged = merged,
             base_path=base_path,
             data_path=data_path,
             language=language,
@@ -61,7 +63,8 @@ def hyperparameter_tuning(
 
     # Setup Optuna
     os.makedirs("./tuning", exist_ok=True)
-    study_name = f"glossing_tuning={language}-track{track}-{model_type}"
+    tag = "merged" if merged else "bpe_raw"
+    study_name = f"glossing_tuning={language}-track{track}-{model_type}-{tag}"
     # Skip if exists
     if os.path.exists(f"./tuning/{study_name}.csv"):
         return
@@ -88,6 +91,7 @@ if __name__ == "__main__":
     parser.add_argument("--track", type=int, choices=[1, 2])
     parser.add_argument("--model", type=str, choices=["ctc", "morph"])
     parser.add_argument("--trials", type=int)
+    parser.add_argument("--merged",action="store_true")
     args = parser.parse_args()
 
     hyperparameter_tuning(
@@ -97,4 +101,5 @@ if __name__ == "__main__":
         track=args.track,
         model_type=args.model,
         num_trials=args.trials,
+        merged = args.merged
     )

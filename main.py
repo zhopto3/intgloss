@@ -37,7 +37,7 @@ def make_argument_parser() -> argparse.ArgumentParser:
         type=int,
         required=True,
         choices=[1, 2],
-        help="Shared Task track. Can be 1 (closed) or 2 (open).",
+        help="Shared Task track. Can be 1 (closed) or 2 (open). Use Track two to try using bpe_mr as unsupervised segmentation",
     )
     parser.add_argument(
         "--layers", type=int, default=1, help="Num. layers of BiLSTM encoder."
@@ -61,6 +61,8 @@ def make_argument_parser() -> argparse.ArgumentParser:
         default=25,
         help="Max. num. epochs (early stopping always enabled).",
     )
+    #Add arg to control if manual merging is used instead of raw bpe_mr 
+    parser.add_argument("--merged",action="store_true",help="If true, will use manual merged ")
 
     args = parser.parse_args()
     return args
@@ -74,7 +76,8 @@ if __name__ == "__main__":
     args = make_argument_parser()
 
     # Make experiment name
-    name = f"glossing_{args.model}_{args.language}_{args.track}"
+    tag = "merged" if args.merged else "bpe_mr"
+    name = f"glossing_{args.model}_{args.language}_{args.track}_{tag}"
 
     # Make experiment directory
     shutil.rmtree("./results", ignore_errors=True)
@@ -100,15 +103,16 @@ if __name__ == "__main__":
     language = args.language
     track = args.track
     language_code = language_code_mapping[language]
-
-    train_file = f"./data/{language}/{language_code}-train-track{track}-uncovered"
-    validation_file = f"./data/{language}/{language_code}-dev-track{track}-uncovered"
-    test_file = f"./data/{language}/{language_code}-dev-track{track}-covered"
+    #Changing to use data with \b and \bm lines
+    train_file = f"./seg_data/data/{language}/{language_code}-train-track{track}-uncovered"
+    validation_file = f"./seg_data/data/{language}/{language_code}-dev-track{track}-uncovered"
+    test_file = f"./seg_data/data/{language}/{language_code}-test-track{track}-covered"
 
     dm = GlossingDataset(
         train_file=train_file,
         validation_file=validation_file,
         test_file=test_file,
+        merged = args.merged,
         batch_size=args.batch,
     )
 
@@ -138,6 +142,7 @@ if __name__ == "__main__":
         )
 
     trainer = Trainer(
+        #CHANGE BACK TO gpu
         accelerator="gpu",
         devices=1,
         gradient_clip_val=1.0,
@@ -162,8 +167,8 @@ if __name__ == "__main__":
         os.path.join(base_path, "logs", name, "version_0", "metrics.csv")
     )
     best_val_accuracy = logs["val_accuracy"].max()
-    print(f"Best validation accuracy: {100 * best_val_accuracy:.2f}")
-
+    #print(f"Best validation accuracy: {100 * best_val_accuracy:.2f}")
+    print(f"Best validation accuracy: {best_val_accuracy:.2f}")
     # Get Predictions
     dm.setup(stage="test")
     predictions = trainer.predict(model=model, dataloaders=dm.test_dataloader())
@@ -214,8 +219,9 @@ if __name__ == "__main__":
     predictions_iterator = iter(decoded_predictions)
 
     # Write predictions
+    tag = "merged" if args.merged else "bpe_raw"
     with open(
-        f"{args.language.lower()}_{args.model}_track{track}.prediction", "w"
+        f"predictions/{args.language.lower()}_{args.model}_track{track}_{tag}.prediction", "w"
     ) as pf:
         with open(test_file) as tf:
             for line in tf:

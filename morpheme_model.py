@@ -38,6 +38,7 @@ class MorphemeGlossingModel(LightningModule):
         self.scheduler_gamma = scheduler_gamma
         self.learn_segmentation = learn_segmentation
         self.classify_num_morphemes = classify_num_morphemes
+        #self.validation_step_outputs = []
 
         self.save_hyperparameters()
 
@@ -84,11 +85,23 @@ class MorphemeGlossingModel(LightningModule):
         word_encodings = torch.index_select(
             encodings, dim=0, index=word_extraction_index_flat
         )
+        # print(word_extraction_index.shape, num_words,chars_per_word,word_encodings.shape)
         word_encodings = word_encodings.reshape(
             num_words, chars_per_word, self.hidden_size
         )
 
         return word_encodings
+    
+    # def alt_get_words(self,encodings:Tensor, word_len:Tensor, batch_mapping:list):
+    #     encodings = encodings.reshape(-1,self.hidden_size)
+    #     i=0
+    #     word_lengths = []
+    #     for i in range(len(set(batch_mapping))):
+    #         num_words = batch_mapping.count(i)
+    #         word_lengths.append(word_len[i:num_words])
+    #         i+=num_words
+
+
 
     def get_num_morphemes(self, word_encodings: Tensor, word_lengths: Tensor):
         assert self.classify_num_morphemes
@@ -125,6 +138,9 @@ class MorphemeGlossingModel(LightningModule):
         char_encodings = self.encode_sentences(
             batch.sentences, batch.sentence_lengths.cpu()
         )
+        # print(batch)
+        # print(torch.sum(batch.word_lengths))
+        # print(char_encodings.shape)
         word_encodings = self.get_words(char_encodings, batch.word_extraction_index)
 
         if self.classify_num_morphemes:
@@ -155,7 +171,7 @@ class MorphemeGlossingModel(LightningModule):
                 word_encodings, batch.morpheme_extraction_index, batch.morpheme_lengths
             )
             best_path_matrix = None
-
+        #Multi-layer perceptron for predicting the prob dist over potential out labels for all morphemes. 
         morpheme_scores = self.classifier(morpheme_encodings)
 
         return {
@@ -225,7 +241,7 @@ class MorphemeGlossingModel(LightningModule):
 
         targets = batch.word_targets.cpu().tolist()
         targets = [[idx for idx in target if idx != 0] for target in targets]
-        assert len(targets) == len(predicted_word_labels)
+        assert len(targets) == len(predicted_word_labels), (len(targets),len(predicted_word_labels))
 
         correct = [
             prediction == target
@@ -234,13 +250,17 @@ class MorphemeGlossingModel(LightningModule):
         return correct
 
     def validation_step(self, batch: Batch, batch_idx: int):
+        # outputs = self.evaluation_step(batch=batch)
+        # self.validation_step_outputs.append(outputs)
+        # return outputs
         return self.evaluation_step(batch=batch)
 
-    def validation_epoch_end(self, outputs) -> None:
+    def validation_epoch_end(self,outputs) -> None:
         correct = list(chain.from_iterable(outputs))
-
         accuracy = np.mean(correct)
         self.log("val_accuracy", 100 * accuracy)
+        #self.validation_step_outputs.clear()  # free memory
+
 
     @staticmethod
     def get_word_segmentations(batch: Batch, best_path_matrix: Tensor):

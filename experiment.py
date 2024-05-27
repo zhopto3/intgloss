@@ -32,12 +32,14 @@ def _make_experiment_name(
     model_type: str,
     hyperparameters: Hyperparameters,
     trial: int,
+    merged: bool
 ):
     experiment_name = language_code_mapping[language]
     experiment_name = experiment_name + "-" + f"track{track}"
     experiment_name = experiment_name + "-" + f"model={model_type}"
     experiment_name = experiment_name + "-" + f"trial={trial}"
-
+    tag = "merged" if merged else "bpe_raw"
+    experiment_name = experiment_name + "-" + f"{tag}"
     hyperparameter_str = "-".join(
         [f"{param}={value}" for param, value in hyperparameters._asdict().items()]
     )
@@ -102,7 +104,7 @@ def _make_test_path(language: str, track: int, data_path: str) -> str:
 
 
 def _make_dataset(
-    language: str, track: int, data_path: str, batch_size: int
+    language: str, track: int, data_path: str, batch_size: int, merged: bool
 ) -> GlossingDataset:
     train_file = _make_train_path(language, track, data_path)
     validation_file = _make_dev_path_uncovered(language, track, data_path)
@@ -113,6 +115,7 @@ def _make_dataset(
         validation_file=validation_file,
         test_file=test_file,
         batch_size=batch_size,
+        merged=merged
     )
 
     return dm
@@ -157,6 +160,7 @@ def experiment(
     data_path: str = "./data",
     verbose: bool = False,
     trial: int = 0,
+    merged:bool = False
 ):
     # Global Settings
     torch.set_float32_matmul_precision("medium")
@@ -167,7 +171,7 @@ def experiment(
 
     # Make Experiment Name and Base Path
     experiment_name = _make_experiment_name(
-        language, track, model_type, hyperparameters, trial
+        language, track, model_type, hyperparameters, trial,merged
     )
     base_path = os.path.join(base_path, experiment_name)
 
@@ -177,7 +181,7 @@ def experiment(
         os.makedirs(base_path, exist_ok=True)
 
     # Prepare Data
-    dm = _make_dataset(language, track, data_path, hyperparameters.batch_size)
+    dm = _make_dataset(language, track, data_path, hyperparameters.batch_size,merged)
     dm.prepare_data()
     dm.setup(stage="fit")
 

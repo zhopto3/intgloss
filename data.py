@@ -40,7 +40,7 @@ def _check_datapoint(datapoint: RawDatapoint) -> bool:
 
     if any(len(wls) == 0 for wls in target):
         return False
-
+    #below is the test that makes using the BPE_MR as the segmentation impossible. 
     if morphemes is not None and any(
         len(ms) != len(wls) for ms, wls in zip(morphemes, target)
     ):
@@ -56,8 +56,9 @@ def _datapoint_is_empty(datapoint: RawDatapoint) -> bool:
     return all(value is None for value in datapoint.values())
 
 
-def read_glossing_file(file) -> GlossingFileData:
+def read_glossing_file(file,merged:bool) -> GlossingFileData:
     track = 1 if "track1" in file else 2
+    tag = "\\q" if merged else "\\b"
     covered = "covered" in file and "uncovered" not in file
 
     raw_datapoints = [_make_empty_datapoint()]
@@ -70,20 +71,28 @@ def read_glossing_file(file) -> GlossingFileData:
             if not line:
                 raw_datapoints.append(_make_empty_datapoint())
 
-            # Handle Source Lines
-            elif line.startswith("\\t"):
-                tokens = line[3:].split(" ")
-                assert raw_datapoints[-1]["source"] is None
-                raw_datapoints[-1]["source"] = tokens
+            # Handle Source Lines; but use the bpe_mr seg instead of the character level...
+            # elif line.startswith("\\t"):
+            #     tokens = line[3:].split(" ")
+            #     assert raw_datapoints[-1]["source"] is None
+            #     raw_datapoints[-1]["source"] = tokens
 
-            # Handle Morpheme Lines
+            elif line.startswith(tag):
+                tokens = line[3:].split(" ")
+                morphemes = [token.split("-") for token in tokens]
+                assert raw_datapoints[-1]["source"] is None
+                raw_datapoints[-1]["source"] = morphemes
+
+            # Handle Morpheme Lines; instead of looking for morpheme lines, look for \b or \bm lines
             elif line.startswith("\\m"):
+                #This does print, so it is accessing the lines, i.e., data is set up fine
+                # print("JJH")
                 tokens = line[3:].split(" ")
                 morphemes = [token.split("-") for token in tokens]
                 assert raw_datapoints[-1]["morphemes"] is None
                 raw_datapoints[-1]["morphemes"] = morphemes
 
-                # Replace Source with Canonical Segmentation
+                # Replace Source with BPE Segmentation
                 assert raw_datapoints[-1]["source"] is not None
                 raw_datapoints[-1]["source"] = tokens
 
@@ -112,7 +121,7 @@ def read_glossing_file(file) -> GlossingFileData:
         raw_datapoints = [
             datapoint for datapoint in raw_datapoints if _check_datapoint(datapoint)
         ]
-
+    #print(raw_datapoints)
     # Check File Constraints
     if track == 2:
         assert all(datapoint["morphemes"] is not None for datapoint in raw_datapoints)
@@ -142,7 +151,13 @@ def read_glossing_file(file) -> GlossingFileData:
 def _make_source_sentence(
     source: List[str], sos_token: str = "[SOS]", eos_token: str = "[EOS]"
 ) -> List[str]:
-    return [sos_token] + list(" ".join(source)) + [eos_token]
+    out_list = []
+    for word in source:
+        out_list += word
+    #return [sos_token] + list(" ".join(source)) + [eos_token]
+    #print([sos_token] + source + [eos_token])
+    #print(out_list)
+    return [sos_token] + out_list + [eos_token]
 
 
 def _make_word_extraction_index(
@@ -162,7 +177,8 @@ def _make_word_extraction_index(
             word_lengths.append(word_indices.shape[0])
             word_batch_mapping.append(i)
             words.append(word)
-            start_index = stop_index + 1
+            #start_index = stop_index + 1
+            start_index = stop_index
 
     word_extraction_index = nlp_pad_sequence(word_extraction_index)
     word_lengths = torch.tensor(word_lengths).long()
@@ -187,8 +203,8 @@ def _batch_collate(
     make_source_sentence = partial(
         _make_source_sentence, sos_token=sos_token, eos_token=eos_token
     )
-    source_sentences = [make_source_sentence(source) for source in sources]
-    source_sentences = [source_tokenizer(source) for source in source_sentences]
+    flat_src = [make_source_sentence(source) for source in sources]   
+    source_sentences = [source_tokenizer(source) for source in flat_src]
 
     source_sentence_tensors = indices_to_tensor(source_sentences)
     source_sentence_lengths = torch.tensor(
@@ -202,18 +218,19 @@ def _batch_collate(
         word_lengths,
         word_batch_mapping,
     ) = _make_word_extraction_index(
+        #changing the start index doesn't do anything
         sources=sources, maximum_sentence_length=maximum_sentence_length
     )
 
     # Make Morpheme Extraction Index (In Case of Track 2)
     if all(ms is not None for ms in morphemes):
         maximum_word_length = max(word_lengths.tolist())
-        morphemes_flat = list(chain.from_iterable(morphemes))
+        morphemes_flat = list(chain.from_iterable(sources))
 
         (
-            morpheme_extraction_index,
-            morpheme_lengths,
-            morpheme_word_mapping,
+            extraction_index,
+            lengths,
+            word_mapping,
         ) = _make_word_extraction_index(
             morphemes_flat, maximum_word_length, start_offset=0
         )
@@ -284,47 +301,57 @@ class GlossingDataset(LightningDataModule):
         train_file: str,
         validation_file: str,
         test_file: str,
+        merged:bool,
         batch_size: int = 32,
     ):
         super().__init__()
         self.train_file = train_file
         self.validation_file = validation_file
         self.test_file = test_file
-
+        self.merged = merged
         self.batch_size = batch_size
 
     def setup(self, stage: str) -> None:
         if stage == "fit" or stage is None:
-            train_data = read_glossing_file(self.train_file)
-            validation_data = read_glossing_file(self.validation_file)
+            #Extract each line of data points and put in dict
+            train_data = read_glossing_file(self.train_file,self.merged)
+            validation_data = read_glossing_file(self.validation_file,self.merged)
 
+            #Make a "SequencePairDataset" of the data points for easier accessibility
             self.train_data = SequencePairDataset(train_data)
             self.validation_data = SequencePairDataset(validation_data)
 
             self.source_alphabet = set()
+            #Add empty space to the alphabet; do I need? 
             self.source_alphabet.add(" ")
             for source in train_data.sources:
                 for word in source:
+                    #Add all CHAR of each src wrd to the character set/alphabet
                     self.source_alphabet.update(set(word))
             self.source_alphabet = list(sorted(self.source_alphabet))
-
+            #alphabet creation is fine 
+            #print(self.source_alphabet)
             self.target_alphabet = set()
             for target in train_data.targets:
                 for word_labels in target:
                     self.target_alphabet.update(set(word_labels))
             self.target_alphabet = list(sorted(self.target_alphabet))
 
+            #+4 for special tokens.
             self.source_alphabet_size = len(self.source_alphabet) + 4
             self.target_alphabet_size = len(self.target_alphabet) + 4
-
+            #originally: [symbol] for symbol in ....
             self.source_tokenizer = build_vocab_from_iterator(
                 [[symbol] for symbol in self.source_alphabet],
                 specials=self.special_tokens,
             )
+            
             self.target_tokenizer = build_vocab_from_iterator(
                 [[symbol] for symbol in self.target_alphabet],
                 specials=self.special_tokens,
             )
+            #print(self.target_tokenizer)
+            #These will numerically encode each input segment...
             self.source_tokenizer.set_default_index(1)
             self.target_tokenizer.set_default_index(1)
 
@@ -333,9 +360,11 @@ class GlossingDataset(LightningDataModule):
                 source_tokenizer=self.source_tokenizer,
                 target_tokenizer=self.target_tokenizer,
             )
+            # for item in [['[SOS]'], ["K̲'ay"], ['yu', 'kwhl'], ['jo', 'g̲', "o'm"], ['g̲', "a'a", 'hl'], ['ts', "'im"], ['wil', 'ps'], ['no', 'x̲', "o'm"], ['g̲a', 'n'], ['nigw', 'oo', 'di', "'m."], ['[EOS]']]:
+            #     print(self.source_tokenizer(item))
 
         if stage == "test" or stage is None:
-            self.test_data = SequencePairDataset(read_glossing_file(self.test_file))
+            self.test_data = SequencePairDataset(read_glossing_file(self.test_file,self.merged))
 
     def train_dataloader(self, shuffle: bool = True):
         return DataLoader(
